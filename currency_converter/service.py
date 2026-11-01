@@ -38,6 +38,9 @@ MAX_HISTORY_DAYS = 30
 HISTORY_FETCH_WORKERS = 4
 
 LATEST_RATES_KEY = "latest"
+# Copy without expiry, read by the scheduled snapshot build for the static
+# site (scripts/build_snapshot.py), so it never has to call the provider.
+LAST_KNOWN_RATES_KEY = "last-known"
 # With a shared store, each process keeps latest rates in memory only briefly
 # and re-reads the shared copy, so rates are never older than the TTL + this.
 SHARED_MEMORY_TTL_SECONDS = 300
@@ -147,9 +150,9 @@ class ConversionService:
                 return snapshot
         snapshot = self._client.fetch_latest_rates()
         if self._shared_store is not None:
-            self._shared_store.set(
-                LATEST_RATES_KEY, snapshot_to_json(snapshot), ttl_seconds=self._latest_ttl_seconds
-            )
+            raw = snapshot_to_json(snapshot)
+            self._shared_store.set(LATEST_RATES_KEY, raw, ttl_seconds=self._latest_ttl_seconds)
+            self._shared_store.set(LAST_KNOWN_RATES_KEY, raw)
         return snapshot
 
     def _historical_snapshot(self, day: date) -> RatesSnapshot:

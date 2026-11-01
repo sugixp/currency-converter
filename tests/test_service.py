@@ -141,3 +141,22 @@ def test_fetches_again_when_the_shared_copy_expired(fake_client, clock):
     make_shared_service(fake_client, clock, store).convert("USD", "BRL", "1")
 
     assert fake_client.rates_calls == 2
+
+
+def test_latest_rates_also_keep_a_copy_without_expiry(fake_client, clock):
+    store = FakeStore()
+
+    make_shared_service(fake_client, clock, store).convert("USD", "BRL", "1")
+
+    assert store.data["last-known"] == store.data["latest"]
+    assert store.ttls["last-known"] is None
+
+
+def test_rates_read_from_the_shared_store_are_not_written_again(fake_client, clock):
+    store = FakeStore()
+    make_shared_service(fake_client, clock, store).convert("USD", "BRL", "1")
+    store.operations.clear()
+
+    make_shared_service(fake_client, clock, store).convert("USD", "BRL", "1")
+
+    assert store.operations == [("get", "latest")]
