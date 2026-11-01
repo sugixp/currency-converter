@@ -443,6 +443,77 @@ select:disabled {
   font: 500 1rem/1.35 var(--font-mono);
 }
 
+/* ---- History ------------------------------------------------------------------- */
+
+.history-pair {
+  color: var(--amber);
+}
+
+.history-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0 0 1.1rem;
+}
+
+.history-stats div {
+  min-width: 0;
+  padding: 0.75rem 0.9rem;
+  background: var(--tile-bottom);
+  border: 1px solid var(--tile-edge);
+  border-radius: 10px;
+}
+
+.history-stats dt {
+  font: 700 0.72rem/1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.history-stats dd {
+  margin: 0.4rem 0 0;
+  font: 700 clamp(0.95rem, 2.5vw, 1.2rem) / 1.25 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.history-stats small {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* Up/down are also spelled out with a sign and an arrow, never color alone. */
+.trend-up {
+  color: #7ddc8b;
+}
+
+.trend-down {
+  color: var(--danger);
+}
+
+.chart-wrap {
+  position: relative;
+  height: clamp(220px, 38vw, 320px);
+  transition: opacity 0.2s;
+}
+
+.chart-wrap[aria-busy="true"] {
+  opacity: 0.4;
+}
+
+.chart-wrap[hidden] {
+  display: none;
+}
+
+@media (max-width: 520px) {
+  .history-stats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* ---- Footer ------------------------------------------------------------------ */
 
 .footer {
