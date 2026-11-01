@@ -1,3 +1,4 @@
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -22,6 +23,15 @@ CURRENCIES = {
 }
 
 
+def historical_usd_rates(day):
+    """Deterministic fake history: USD->BRL is 5.00 + day of month / 100."""
+    return {**USD_RATES, "BRL": Decimal("5") + Decimal(day.day) / 100}
+
+
+def historical_timestamp(day):
+    return datetime(day.year, day.month, day.day, 23, 0, tzinfo=timezone.utc)
+
+
 class FakeClock:
     def __init__(self):
         self.now = 0.0
@@ -36,7 +46,17 @@ class FakeOXRClient:
     def __init__(self):
         self.rates_calls = 0
         self.currencies_calls = 0
+        self.historical_calls = []
         self.error = None
+        self.historical_error = None
+        self._lock = threading.Lock()  # history days are fetched from several threads
+
+    def fetch_historical_rates(self, day):
+        with self._lock:
+            self.historical_calls.append(day)
+        if self.historical_error:
+            raise self.historical_error
+        return RatesSnapshot(rates=historical_usd_rates(day), timestamp=historical_timestamp(day))
 
     def fetch_latest_rates(self):
         self.rates_calls += 1

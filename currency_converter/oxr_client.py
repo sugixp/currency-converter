@@ -5,7 +5,7 @@ provider's error format; it translates all of that into domain exceptions.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import requests
@@ -35,9 +35,16 @@ class OpenExchangeRatesClient:
         self._session = session or requests.Session()
 
     def fetch_latest_rates(self) -> RatesSnapshot:
+        return self._fetch_snapshot("latest.json")
+
+    def fetch_historical_rates(self, day: date) -> RatesSnapshot:
+        """Rates published for a past UTC day. Each call counts as one quota request."""
+        return self._fetch_snapshot(f"historical/{day.isoformat()}.json")
+
+    def _fetch_snapshot(self, path: str) -> RatesSnapshot:
         if not self._app_id:
             raise InvalidApiKeyError("OXR_APP_ID is not set. Add it to your .env file.")
-        body = self._get("latest.json", {"app_id": self._app_id})
+        body = self._get(path, {"app_id": self._app_id})
         try:
             if body["base"] != "USD":
                 raise ExchangeRateProviderError(f"Expected USD base rates, got {body['base']!r}.")

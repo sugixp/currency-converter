@@ -9,6 +9,10 @@ class InvalidAmountError(ConverterError):
     """The amount is not a number, is not positive, or is too large."""
 
 
+class InvalidDaysError(ConverterError):
+    """The number of history days is not an integer within the allowed range."""
+
+
 class InvalidCurrencyError(ConverterError):
     """The currency code is not a 3-letter code."""
 

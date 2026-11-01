@@ -1,6 +1,6 @@
 """Tests for the HTTP client using a fake requests session (no network access)."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -53,6 +53,16 @@ def test_fetch_latest_rates_parses_rates_as_exact_decimals():
     assert session.requests == [
         {"url": f"{BASE_URL}/latest.json", "params": {"app_id": "test-app-id"}, "timeout": 5}
     ]
+
+
+def test_fetch_historical_rates_requests_the_given_day():
+    client, session = make_client(make_response(200, LATEST_BODY))
+
+    snapshot = client.fetch_historical_rates(date(2026, 10, 15))
+
+    assert snapshot.rates["BRL"] == Decimal("5.0702")
+    assert session.requests[0]["url"] == f"{BASE_URL}/historical/2026-10-15.json"
+    assert session.requests[0]["params"] == {"app_id": "test-app-id"}
 
 
 def test_missing_app_id_fails_without_calling_the_api():

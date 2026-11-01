@@ -12,12 +12,16 @@ class Settings:
     cache_ttl_seconds: int = 3600
     request_timeout_seconds: float = 10.0
     cors_origins: tuple[str, ...] = ("*",)
+    # None disables the on-disk history cache (memory only).
+    history_cache_dir: str | None = None
 
 
 def load_settings() -> Settings:
     load_dotenv()
     return Settings(
         oxr_app_id=os.getenv("OXR_APP_ID", "").strip(),
+        # Unset means the default folder; set but empty means disabled.
+        history_cache_dir=os.getenv("HISTORY_CACHE_DIR", ".cache/historical").strip() or None,
         cache_ttl_seconds=_read_number("CACHE_TTL_SECONDS", int, Settings.cache_ttl_seconds),
         request_timeout_seconds=_read_number(
             "REQUEST_TIMEOUT_SECONDS", float, Settings.request_timeout_seconds
