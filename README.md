@@ -1,5 +1,10 @@
 # Currency Converter 💱
 
+- **Live app:** https://sugixp.github.io/currency-converter/
+- **API docs (Swagger UI):** https://currency-converter-api-93lo.onrender.com/docs
+
+> Hosted on free plans: if nobody used the API in the last 15 minutes, the first request takes up to a minute while the server wakes up. The page shows a "Waking up the server" notice meanwhile.
+
 Real-time currency conversion backed by the [Open Exchange Rates](https://openexchangerates.org/) API, available as a **web app**, a **REST API (FastAPI)** and a **command-line tool**. All of them share the same conversion core.
 
 ## Features
@@ -7,11 +12,13 @@ Real-time currency conversion backed by the [Open Exchange Rates](https://openex
 - Convert between any two of 150+ currencies (USD, BRL, EUR, GBP, JPY...)
 - Cross-rate conversion via USD, so it works on the Open Exchange Rates free plan (fixed USD base)
 - 30-day rate history chart for any currency pair
-- In-memory cache with configurable expiration to save API quota, plus a permanent per-day cache for historical rates
+- Caches that save API quota: latest rates with configurable expiration, historical rates forever (one request per day, shared by every pair), persisted in Upstash Redis so restarts cost nothing
+- Quota safety limit: reads the real monthly usage from Open Exchange Rates and pauses only the history before it eats into requests reserved for conversions
 - Exact money math with `Decimal` (no floating-point rounding errors)
 - Clear errors for invalid input, unknown currencies, provider outages, invalid App ID and exceeded quota
 - Vanilla HTML/CSS/JS frontend (no framework, no build step): responsive, keyboard accessible, friendly error messages
 - Fully tested with pytest; tests never call the real API
+- Deployed with CI: tests run on GitHub Actions, the API deploys to Render only when they pass, and the frontend deploys to GitHub Pages
 
 ## Technologies
 
@@ -19,7 +26,8 @@ Real-time currency conversion backed by the [Open Exchange Rates](https://openex
 - FastAPI + Uvicorn
 - Requests
 - python-dotenv
-- pytest
+- pytest, GitHub Actions
+- Render (API), GitHub Pages (frontend), Upstash Redis (shared cache)
 - HTML, CSS and JavaScript (ES modules) + [Chart.js](https://www.chartjs.org/)
 
 ## Project structure
@@ -30,7 +38,9 @@ currency_converter/
 ├── errors.py       # domain exceptions
 ├── oxr_client.py   # HTTP client for Open Exchange Rates
 ├── cache.py        # thread-safe in-memory TTL cache
-├── historical_store.py  # permanent per-day cache of historical rates (memory + disk)
+├── historical_store.py  # permanent per-day cache of historical rates
+├── storage.py      # key-value stores: files (local) or Upstash Redis (production)
+├── quota.py        # safety limit based on the provider's real usage
 ├── service.py      # conversion rules (validation, cross rate, Decimal)
 ├── api.py          # FastAPI app (REST interface)
 ├── cli.py          # command-line interface
@@ -38,11 +48,13 @@ currency_converter/
 tests/              # pytest suite with a fake provider client
 frontend/
 ├── index.html
-├── config.js       # the API URL (the only place to change on deploy)
-├── api.js          # fetch wrapper: timeout + friendly error messages
+├── config.js       # API URL, picked by hostname (localhost or production)
+├── api.js          # fetch wrapper: timeout, server wake-up, friendly errors
 ├── app.js          # form, result board, history loading
 ├── history-chart.js  # Chart.js setup
 └── styles.css
+render.yaml         # Render Blueprint for the API
+.github/workflows/  # tests.yml (CI) and pages.yml (frontend deploy)
 ```
 
 The layers depend only downward: `frontend/` → (HTTP) → `api.py`; `api.py` and `cli.py` → `service.py` → `oxr_client.py` / `cache.py` / `historical_store.py`. The service knows nothing about HTTP or the terminal, and only `oxr_client.py` knows about the external API.
@@ -92,11 +104,14 @@ Set `OXR_APP_ID` to your App ID. `.env` is listed in `.gitignore` and must never
 | `HISTORY_CACHE_DIR` | `.cache/historical` | Folder for the permanent history cache; set it empty to keep history in memory only |
 | `REQUEST_TIMEOUT_SECONDS` | `10` | Timeout for calls to Open Exchange Rates |
 | `CORS_ORIGINS` | `*` | Comma-separated origins allowed to call the API. `.env.example` allows the local frontend (`http://localhost:5500`, `http://127.0.0.1:5500`) |
+| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | *(empty)* | Optional. Upstash Redis REST credentials; when set, caches live there and survive restarts. Set both or neither |
+| `QUOTA_RESERVE` | `150` | Requests kept for conversions each month; the history pauses before spending them |
 
 **About the quota:** the free plan allows 1,000 requests/month and updates rates hourly.
 
 - **Latest rates:** with the default 1-hour cache, one running process makes at most ~744 requests/month (24 × 31). Each process has its own cache, so running the API and the CLI at the same time, or frequent restarts, use extra requests.
-- **History:** the free plan returns one day per request, so the first 30-day chart costs 29 requests (today comes from the latest rates). Past days never change, so each day is cached forever, on disk, and shared by every currency pair: after that, history costs about one request per day. `days` is capped at 30 so a single call can never drain the quota.
+- **History:** the free plan returns one day per request, so the first 30-day chart costs 29 requests (today comes from the latest rates). Past days never change, so each day is cached forever (on disk locally, in Upstash Redis in production) and shared by every currency pair: after that, history costs about one request per day. `days` is capped at 30 so a single call can never drain the quota.
+- **Safety limit:** before fetching uncached days, the API checks the account's real usage (`usage.json`, which does not count toward the quota). If fetching would leave fewer than `QUOTA_RESERVE` requests, the history answers `503 history_paused` and conversions keep working.
 - **Currencies:** the currency list (`currencies.json`) does not count toward the quota.
 
 ## Running the API
@@ -168,6 +183,7 @@ Every error has the same shape:
 | 400 | `invalid_currency` | Currency code is not 3 letters |
 | 400 | `invalid_days` | `days` is not a whole number from 2 to 30 |
 | 404 | `unknown_currency` | Currency is not offered by the provider |
+| 503 | `history_paused` | History paused to protect the monthly quota (conversions still work) |
 | 502 | `provider_auth_error` | App ID missing or rejected (server misconfiguration) |
 | 502 | `provider_error` | Unexpected response from the provider |
 | 503 | `provider_rate_limited` | Provider quota exceeded |
@@ -189,7 +205,7 @@ python -m http.server 5500 -d frontend
 
 Open http://localhost:5500.
 
-- The API URL lives only in `frontend/config.js` (`API_BASE_URL`, default `http://localhost:8000`). Change it there when deploying.
+- The API URL lives only in `frontend/config.js`: on `localhost`/`127.0.0.1` it uses `http://localhost:8000`, anywhere else the production API on Render. Nothing to edit when switching between them.
 - The page's origin must be allowed by `CORS_ORIGINS` in `.env`. If your `.env` was created before the frontend existed, add `http://localhost:5500,http://127.0.0.1:5500` to it and restart the API.
 - Open the page through the server, not by double-clicking `index.html`: browsers block ES modules on `file://`.
 - Chart.js is loaded from the jsDelivr CDN with a pinned version and Subresource Integrity. If it can't load, the converter and the history summary still work without the chart.
@@ -227,3 +243,23 @@ python -m pytest
 ```
 
 The tests replace the Open Exchange Rates client with a fake one (and the HTTP session with a fake session in the client tests), so they run offline and never use your quota.
+
+The same suite runs on GitHub Actions on every push (`.github/workflows/tests.yml`).
+
+## Deployment
+
+| Part | Where | How it deploys |
+|---|---|---|
+| API | [Render](https://render.com) web service, free plan, Oregon | `render.yaml` Blueprint; auto-deploys a commit only after the **Tests** workflow passes (`autoDeployTrigger: checksPass`) |
+| Frontend | [GitHub Pages](https://pages.github.com) | `.github/workflows/pages.yml` publishes the `frontend/` folder when it changes |
+| Shared cache | [Upstash Redis](https://upstash.com), free plan | Used by the API through its REST API |
+
+Secrets (`OXR_APP_ID`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`) are set in the Render dashboard and never committed; `render.yaml` declares them with `sync: false`. `CORS_ORIGINS` is in `render.yaml` and allows only `https://sugixp.github.io` plus the local frontend.
+
+### Free plan limitations
+
+- **Cold starts:** Render puts free services to sleep after 15 minutes without traffic, and waking up takes about a minute. The frontend polls `/health`, shows a "Waking up the server" notice, and gives up only after 90 seconds.
+- **Ephemeral disk:** the server's files are wiped on every restart, sleep and deploy. That is why the caches live in Upstash Redis instead of on disk.
+- **Exchange rate quota:** 1,000 Open Exchange Rates requests per month, with rates updated hourly. The caches and the safety limit above keep usage well within it.
+- **Upstash:** 500K commands per month and 250 MB of storage (this app needs a tiny fraction). Free databases are archived after 30 days without any use; restore it from the Upstash console if that happens. Adding a credit card to the Upstash account moves free databases to a paid plan.
+- **Render hours:** 750 free instance hours per month per workspace, enough for one always-on service.
