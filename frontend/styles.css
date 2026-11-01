@@ -425,8 +425,36 @@ select:disabled {
   animation: none;
 }
 
-.result[aria-busy="true"] .capsule {
+/* Pulse only the empty placeholder: a value already on screen stays steady
+   while it updates (the source line below says "updating…"). */
+.result[aria-busy="true"] .capsule--empty {
   animation: pulse 0.9s ease-in-out infinite alternate;
+}
+
+.rates-source {
+  min-height: 1.5em; /* reserved, so changing the text never moves the layout */
+  margin: 0.6rem 0 0;
+  font: 500 0.85rem/1.5 var(--font-mono);
+  color: var(--muted);
+}
+
+.rates-source.is-warning {
+  color: var(--amber);
+}
+
+.link-button {
+  margin-left: 0.4rem;
+  padding: 0;
+  font: inherit;
+  color: var(--amber);
+  text-decoration: underline;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.link-button[hidden] {
+  display: none;
 }
 
 .result-meta {

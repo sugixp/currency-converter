@@ -16,3 +16,8 @@ export const REQUEST_TIMEOUT_MS = 10000;
 // WAKING_NOTICE_DELAY_MS, and give up only after WAKE_UP_TIMEOUT_MS.
 export const WAKING_NOTICE_DELAY_MS = 2500;
 export const WAKE_UP_TIMEOUT_MS = 90000;
+
+// The snapshot is refreshed every 2 hours by a scheduled GitHub workflow.
+// Older than this, the page says plainly that the saved rates may be outdated
+// (e.g. GitHub paused the schedule after 60 days without repository activity).
+export const SNAPSHOT_STALE_DAYS = 3;

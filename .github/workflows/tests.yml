@@ -25,3 +25,11 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+      # The frontend's exact decimal math and snapshot logic (no dependencies).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Run frontend tests
+        run: node --test tests/js/frontend.test.mjs

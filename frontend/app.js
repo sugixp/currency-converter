@@ -1,5 +1,13 @@
 import { convert, getCurrencies, getHistory, onServerStatus } from "./api.js";
+import { SNAPSHOT_STALE_DAYS } from "./config.js";
 import { createHistoryChart, formatRate, isChartAvailable } from "./history-chart.js";
+import {
+  loadSnapshot,
+  snapshotAgeDays,
+  snapshotConversion,
+  snapshotCurrencies,
+  snapshotHistory,
+} from "./snapshot.js";
 
 // Shown first in both selects, in this order (only if the API offers them).
 const POPULAR_CODES = ["USD", "EUR", "BRL", "GBP", "JPY", "CAD", "AUD", "CHF", "CNY", "ARS", "MXN"];
@@ -7,6 +15,9 @@ const DEFAULTS = { from: "USD", to: "BRL", amount: "100" };
 const STORAGE_KEY = "currency-converter:last-conversion";
 const PLACEHOLDER = "— — —";
 const HISTORY_DAYS = 30;
+
+// Errors about the user's input; everything else means "live rates unavailable".
+const INPUT_ERRORS = new Set(["invalid_amount", "invalid_currency", "unknown_currency", "invalid_request"]);
 
 const elements = {
   form: document.getElementById("converter-form"),
@@ -25,10 +36,13 @@ const elements = {
   resultText: document.getElementById("result-text"),
   resultRate: document.getElementById("result-rate"),
   resultTime: document.getElementById("result-time"),
+  ratesSourceText: document.getElementById("rates-source-text"),
+  ratesRetry: document.getElementById("rates-retry"),
   historyPair: document.getElementById("history-pair"),
   historyChange: document.getElementById("history-change"),
   historyLow: document.getElementById("history-low"),
   historyHigh: document.getElementById("history-high"),
+  historySource: document.getElementById("history-source"),
   historyChartWrap: document.getElementById("history-chart-wrap"),
   historyCanvas: document.getElementById("history-chart"),
   historyAlert: document.getElementById("history-alert"),
@@ -43,6 +57,14 @@ let conversionController = null;
 let historyController = null;
 let historyChart = null;
 let retryAction = null;
+
+// The snapshot (saved rates published with the site) lets the page show values
+// at once; live API answers replace them. Once the API has answered, there is
+// no point showing older saved values first, so the snapshot steps aside.
+let snapshot = null;
+let liveRatesWorking = false;
+let liveHistoryWorking = false;
+let currenciesFilled = false;
 
 init();
 
@@ -60,12 +82,23 @@ function init() {
   elements.swap.addEventListener("click", swapCurrencies);
   elements.amount.addEventListener("input", () => setAmountError(null));
   elements.alertRetry.addEventListener("click", () => retryAction?.());
+  elements.ratesRetry.addEventListener("click", onPairChange);
   elements.historyRetry.addEventListener("click", loadHistory);
-  // A sleeping server is expected on free hosting: show a notice, not an error.
+  // A sleeping server is expected on free hosting. With saved rates on screen
+  // the small source line already says "updating…"; the banner is only for
+  // when there is nothing to show yet.
   onServerStatus((status) => {
-    elements.serverStatus.hidden = status !== "waking";
+    elements.serverStatus.hidden = status !== "waking" || snapshot !== null;
   });
 
+  setFormEnabled(false);
+  setLoadingOption("Loading currencies…");
+  loadSnapshot().then((loaded) => {
+    snapshot = loaded;
+    if (!snapshot) return;
+    elements.serverStatus.hidden = true; // saved values are on screen now
+    if (!currenciesFilled) fillCurrencies(snapshotCurrencies(snapshot), saved);
+  });
   loadCurrencies(saved);
 }
 
@@ -73,19 +106,24 @@ function init() {
 
 async function loadCurrencies(selection) {
   hideAlert();
-  setFormEnabled(false);
-  setLoadingOption("Loading currencies…");
-
   try {
     const { currencies } = await getCurrencies();
-    fillSelect(elements.from, currencies, selection.from);
-    fillSelect(elements.to, currencies, selection.to);
-    setFormEnabled(true);
-    onPairChange();
+    // If the snapshot already filled the selects, keep them: rebuilding would
+    // reset the user's choice and make the page jump.
+    if (!currenciesFilled) fillCurrencies(currencies, selection);
   } catch (error) {
+    if (currenciesFilled) return; // the snapshot's list is on screen
     setLoadingOption("Currencies unavailable");
     showAlert(error.message, () => loadCurrencies(selection));
   }
+}
+
+function fillCurrencies(currencies, selection) {
+  fillSelect(elements.from, currencies, selection.from);
+  fillSelect(elements.to, currencies, selection.to);
+  currenciesFilled = true;
+  setFormEnabled(true);
+  onPairChange();
 }
 
 function fillSelect(select, currencies, selectedCode) {
@@ -94,7 +132,7 @@ function fillSelect(select, currencies, selectedCode) {
 
   select.replaceChildren(
     buildGroup("Popular", popular),
-    buildGroup("All currencies", currencies), // already sorted by code by the API
+    buildGroup("All currencies", currencies), // already sorted by code
   );
   select.value = byCode.has(selectedCode) ? selectedCode : popular[0]?.code ?? currencies[0]?.code;
 }
@@ -103,7 +141,7 @@ function buildGroup(label, currencies) {
   const group = document.createElement("optgroup");
   group.label = label;
   for (const { code, name } of currencies) {
-    group.append(new Option(`${code} — ${name}`, code));
+    group.append(new Option(code === name ? code : `${code} — ${name}`, code));
   }
   return group;
 }
@@ -135,18 +173,41 @@ async function runConversion() {
   conversionController?.abort();
   const controller = new AbortController();
   conversionController = controller;
+
+  // Show the saved rates right away while the live answer is on its way.
+  const provisional =
+    snapshot && !liveRatesWorking ? snapshotConversion(snapshot, request.from, request.to, amount) : null;
+  if (provisional) {
+    renderResult(provisional);
+    setRatesSource("snapshot", { updating: true });
+  }
   setBusy(true);
 
   try {
     const result = await convert(request, { signal: controller.signal });
-    renderResult(result);
+    liveRatesWorking = true;
+    // Replace the provisional numbers in place, without replaying the entrance animation.
+    renderResult(result, { animate: !provisional });
+    setRatesSource("live");
     saveConversion({ from: request.from, to: request.to, amount: elements.amount.value.trim() });
   } catch (error) {
     if (controller.signal.aborted) return; // superseded by a newer request
-    clearResult();
-    if (error.code === "invalid_amount") {
-      setAmountError(error.message);
+    if (INPUT_ERRORS.has(error.code)) {
+      clearResult();
+      setRatesSource(null);
+      if (error.code === "invalid_amount") setAmountError(error.message);
+      else showAlert(error.message);
+      return;
+    }
+    liveRatesWorking = false;
+    // The server may also fall asleep mid-session: fall back to the saved rates then too.
+    const fallback = provisional ?? (snapshot && snapshotConversion(snapshot, request.from, request.to, amount));
+    if (fallback) {
+      if (!provisional) renderResult(fallback);
+      setRatesSource("snapshot", { updating: false }); // keep the saved values, no error screen
     } else {
+      clearResult();
+      setRatesSource(null);
       showAlert(error.message, runConversion);
     }
   } finally {
@@ -188,6 +249,44 @@ function normalizeAmount(raw) {
   return value;
 }
 
+// ---- Where the numbers come from ---------------------------------------------
+
+/** source: "live" | "snapshot" | null (nothing shown). */
+function setRatesSource(source, { updating = false } = {}) {
+  const line = elements.ratesSourceText.parentElement;
+  elements.ratesRetry.hidden = true;
+  line.classList.remove("is-warning");
+
+  if (source === "live") {
+    elements.ratesSourceText.textContent = "Live rates";
+  } else if (source === "snapshot") {
+    const stale = snapshotAgeDays(snapshot) > SNAPSHOT_STALE_DAYS;
+    const status = updating ? "updating…" : "live rates unavailable right now";
+    elements.ratesSourceText.textContent = `${describeSnapshot(stale)} · ${status}`;
+    line.classList.toggle("is-warning", stale || !updating);
+    elements.ratesRetry.hidden = updating;
+  } else {
+    elements.ratesSourceText.textContent = "";
+  }
+}
+
+function describeSnapshot(stale) {
+  const timestamp = new Date(snapshot.latest.timestamp);
+  if (stale) {
+    const day = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeZone: "UTC" }).format(timestamp);
+    return `Saved rates from ${day}, ${snapshotAgeDays(snapshot)} days ago, may be outdated`;
+  }
+  const sameDay = timestamp.toISOString().slice(0, 10) === new Date().toISOString().slice(0, 10);
+  const time = new Intl.DateTimeFormat(undefined, {
+    ...(sameDay ? {} : { month: "short", day: "numeric" }),
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZone: "UTC",
+  }).format(timestamp);
+  return `Rates from ${time} UTC`;
+}
+
 // ---- History -------------------------------------------------------------------
 
 async function loadHistory() {
@@ -200,15 +299,35 @@ async function loadHistory() {
   historyController = controller;
   elements.historyAlert.hidden = true;
   elements.historyPair.textContent = `${from} → ${to}`;
+
+  const provisional = snapshot && !liveHistoryWorking ? snapshotHistory(snapshot, from, to) : null;
+  if (provisional) {
+    renderHistory(provisional);
+    elements.historySource.textContent = "Saved data · updating…";
+  } else {
+    elements.historySource.textContent = "";
+  }
   elements.historyChartWrap.setAttribute("aria-busy", "true");
 
   try {
     const history = await getHistory({ from, to, days: HISTORY_DAYS }, { signal: controller.signal });
+    liveHistoryWorking = true;
     renderHistory(history);
+    elements.historySource.textContent = "";
   } catch (error) {
     if (controller.signal.aborted) return;
-    clearHistory();
-    showHistoryAlert(error.message, { retry: true });
+    liveHistoryWorking = false;
+    const fallback = provisional ?? (snapshot && snapshotHistory(snapshot, from, to));
+    if (fallback) {
+      if (!provisional) renderHistory(fallback);
+      elements.historySource.textContent =
+        error.code === "history_paused"
+          ? "Saved data · live history paused to save this month's quota"
+          : "Saved data · live history unavailable right now";
+    } else {
+      clearHistory();
+      showHistoryAlert(error.message, { retry: true });
+    }
   } finally {
     if (historyController === controller) {
       elements.historyChartWrap.setAttribute("aria-busy", "false");
@@ -262,6 +381,7 @@ function renderStat(element, point) {
 function clearHistory() {
   // Never leave the previous pair's chart on screen under the new pair's title.
   elements.historyChartWrap.hidden = true;
+  elements.historySource.textContent = "";
   for (const element of [elements.historyChange, elements.historyLow, elements.historyHigh]) {
     element.textContent = "—";
     element.className = "";
@@ -286,7 +406,7 @@ function formatPercent(value) {
 
 // ---- Rendering -----------------------------------------------------------------
 
-function renderResult(result) {
+function renderResult(result, { animate = true } = {}) {
   const amount = formatNumber(result.amount, { maximumFractionDigits: 20 });
   const converted = formatNumber(result.converted_amount, {
     minimumFractionDigits: 2,
@@ -299,7 +419,7 @@ function renderResult(result) {
   }).format(new Date(result.rate_timestamp));
 
   elements.resultFrom.textContent = `${amount} ${result.from} =`;
-  renderCapsule(converted, result.to);
+  renderCapsule(converted, result.to, { animate });
   elements.resultRate.textContent = `1 ${result.from} = ${rate} ${result.to}`;
   elements.resultTime.textContent = publishedAt;
   // The capsule is hidden from screen readers; this sentence is what they announce.
@@ -315,7 +435,7 @@ function clearResult() {
 }
 
 /** Shows the converted value and its currency code together in one capsule. */
-function renderCapsule(value, code = null) {
+function renderCapsule(value, code = null, { animate = true } = {}) {
   const capsule = elements.resultValue;
   const valueSpan = document.createElement("span");
   valueSpan.textContent = value;
@@ -330,10 +450,12 @@ function renderCapsule(value, code = null) {
   capsule.classList.toggle("capsule--empty", !code);
   // The font size shrinks with the text length so large values never overflow.
   capsule.style.setProperty("--chars", value.length + (code ? code.length + 1 : 0));
-  // Restart the entrance animation for every new value.
-  capsule.style.animation = "none";
-  void capsule.offsetWidth;
-  capsule.style.animation = "";
+  if (animate) {
+    // Restart the entrance animation for every new value.
+    capsule.style.animation = "none";
+    void capsule.offsetWidth;
+    capsule.style.animation = "";
+  }
 }
 
 function formatNumber(value, options) {

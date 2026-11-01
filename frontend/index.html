@@ -90,6 +90,11 @@
           <p id="result-from" class="result-from">&nbsp;</p>
           <!-- Visual only: screen readers get the full sentence from #result-text. -->
           <p id="result-value" class="capsule capsule--empty" aria-hidden="true">— — —</p>
+          <!-- Where the numbers come from: live API or the saved snapshot. Space is always reserved. -->
+          <p class="rates-source">
+            <span id="rates-source-text"></span>
+            <button type="button" id="rates-retry" class="link-button" hidden>Try again</button>
+          </p>
           <p id="result-text" class="visually-hidden"></p>
           <dl class="result-meta">
             <div>
@@ -123,6 +128,8 @@
             <dd id="history-high">—</dd>
           </div>
         </dl>
+
+        <p id="history-source" class="rates-source"></p>
 
         <div id="history-chart-wrap" class="chart-wrap" aria-busy="false">
           <canvas id="history-chart" role="img" aria-label="Exchange rate history chart"></canvas>
