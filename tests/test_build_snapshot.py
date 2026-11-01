@@ -80,7 +80,35 @@ def test_main_writes_compact_json(tmp_path, monkeypatch):
     monkeypatch.setenv("UPSTASH_REDIS_REST_URL", "https://x.upstash.io")
     monkeypatch.setenv("UPSTASH_REDIS_REST_READONLY_TOKEN", "read-only")
     monkeypatch.setattr(script, "UpstashStore", lambda *args, **kwargs: store_with())
+    monkeypatch.setattr(script, "fetch_currency_names", lambda: {"BRL": "Brazilian Real"})
     output = tmp_path / "snapshot.json"
 
     assert script.main(["--output", str(output)]) == 0
     assert json.loads(output.read_text(encoding="utf-8"))["latest"]["rates"]["BRL"] == "5.43840"
+
+
+def test_currency_names_only_for_currencies_with_rates():
+    names = {"USD": "United States Dollar", "BRL": "Brazilian Real", "ZZZ": "Not In Rates"}
+
+    snapshot = script.build_snapshot(store_with(), NOW, names)
+
+    assert snapshot["currencies"] == {"BRL": "Brazilian Real", "USD": "United States Dollar"}
+
+
+def test_snapshot_without_names_still_works():
+    assert script.build_snapshot(store_with(), NOW)["currencies"] == {}
+
+
+def test_currency_names_failure_is_not_fatal(monkeypatch):
+    from currency_converter.errors import ProviderUnavailableError
+
+    class FailingClient:
+        def __init__(self, app_id):
+            pass
+
+        def fetch_currencies(self):
+            raise ProviderUnavailableError("down")
+
+    monkeypatch.setattr(script, "OpenExchangeRatesClient", FailingClient)
+
+    assert script.fetch_currency_names() == {}

@@ -21,6 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from currency_converter.errors import ConverterError  # noqa: E402
+from currency_converter.oxr_client import OpenExchangeRatesClient  # noqa: E402
 from currency_converter.service import (  # noqa: E402
     LAST_KNOWN_RATES_KEY,
     LATEST_RATES_KEY,
@@ -37,7 +39,19 @@ logger = logging.getLogger("build_snapshot")
 HISTORY_SIGNIFICANT_DIGITS = 7
 
 
-def build_snapshot(store: KeyValueStore, now: datetime) -> dict | None:
+def fetch_currency_names() -> dict[str, str]:
+    """Currency names, so the page can fill its selects before the API answers.
+
+    currencies.json needs no App ID and does not count toward the quota.
+    """
+    try:
+        return OpenExchangeRatesClient(app_id="").fetch_currencies()
+    except ConverterError:
+        logger.warning("Could not fetch currency names; the page will show codes until the API answers.")
+        return {}
+
+
+def build_snapshot(store: KeyValueStore, now: datetime, currency_names: dict[str, str] | None = None) -> dict | None:
     """Snapshot dict from the cache, or None when the cache has no rates yet."""
     latest = snapshot_from_json(store.get(f"rates:{LAST_KNOWN_RATES_KEY}")) or snapshot_from_json(
         store.get(f"rates:{LATEST_RATES_KEY}")
@@ -62,6 +76,10 @@ def build_snapshot(store: KeyValueStore, now: datetime) -> dict | None:
     return {
         "generated_at": _iso(now),
         "base": "USD",
+        # Only currencies we actually have rates for, so every option can be converted.
+        "currencies": {
+            code: name for code, name in sorted((currency_names or {}).items()) if code in latest.rates
+        },
         "latest": {
             "timestamp": _iso(latest.timestamp),
             "rates": {code: format(rate, "f") for code, rate in latest.rates.items()},
@@ -92,7 +110,7 @@ def main(argv=None) -> int:
         return 0
 
     store = UpstashStore(url, token, key_prefix=UPSTASH_KEY_PREFIX)
-    snapshot = build_snapshot(store, datetime.now(timezone.utc))
+    snapshot = build_snapshot(store, datetime.now(timezone.utc), fetch_currency_names())
     if snapshot is None:
         logger.warning("No cached rates found in Upstash; publishing without a snapshot.")
         return 0
