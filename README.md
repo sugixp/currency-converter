@@ -15,7 +15,7 @@ Real-time currency conversion backed by the [Open Exchange Rates](https://openex
 
 ## Technologies
 
-- Python 3.11+ (developed and tested on 3.14)
+- Python 3.11+ (developed and tested on 3.14.6)
 - FastAPI + Uvicorn
 - Requests
 - python-dotenv
