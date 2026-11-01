@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Currency Exchange Board</title>
+    <meta name="description" content="Convert between 150+ currencies with real-time exchange rates." />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#121417" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23121417'/%3E%3Cpath d='M8 12h15l-4-4M24 20H9l4 4' fill='none' stroke='%23ffb22e' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <header class="masthead">
+      <p class="eyebrow"><span class="led" aria-hidden="true"></span> Live rates · updated hourly</p>
+      <h1>Currency <span>Exchange Board</span></h1>
+    </header>
+
+    <main class="layout">
+      <section class="panel" aria-labelledby="converter-title">
+        <h2 id="converter-title" class="panel-title">Convert</h2>
+
+        <form id="converter-form" novalidate>
+          <div class="field">
+            <label for="amount">Amount</label>
+            <input
+              id="amount"
+              name="amount"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              spellcheck="false"
+              value="100"
+              aria-describedby="amount-hint amount-error"
+              required
+            />
+            <p id="amount-hint" class="hint">Use a comma or a dot for decimals, e.g. 19,90</p>
+            <p id="amount-error" class="field-error" hidden></p>
+          </div>
+
+          <div class="pair">
+            <div class="field">
+              <label for="from">From</label>
+              <select id="from" name="from" disabled>
+                <option>Loading currencies…</option>
+              </select>
+            </div>
+
+            <button type="button" id="swap" class="swap" aria-label="Swap currencies" title="Swap currencies" disabled>
+              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+                <path d="M4 8h14l-4-4M20 16H6l4 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+
+            <div class="field">
+              <label for="to">To</label>
+              <select id="to" name="to" disabled>
+                <option>Loading currencies…</option>
+              </select>
+            </div>
+          </div>
+
+          <button type="submit" id="convert" class="convert" disabled>Convert</button>
+        </form>
+
+        <div id="alert" class="alert" role="alert" hidden>
+          <p id="alert-message"></p>
+          <button type="button" id="alert-retry" class="retry" hidden>Try again</button>
+        </div>
+      </section>
+
+      <section class="board" aria-labelledby="result-title">
+        <h2 id="result-title" class="board-title">Result</h2>
+        <div id="result" class="result" aria-live="polite" aria-busy="false">
+          <p id="result-from" class="result-from">&nbsp;</p>
+          <div class="result-line">
+            <div id="result-tiles" class="tiles" aria-hidden="true"></div>
+            <span id="result-code" class="result-code"></span>
+          </div>
+          <p id="result-text" class="visually-hidden"></p>
+          <dl class="result-meta">
+            <div>
+              <dt>Rate</dt>
+              <dd id="result-rate">—</dd>
+            </div>
+            <div>
+              <dt>Published</dt>
+              <dd id="result-time">—</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>
+        Rates from <a href="https://openexchangerates.org/">Open Exchange Rates</a>, refreshed hourly.
+        For reference only, not for trading.
+      </p>
+    </footer>
+  </body>
+</html>
