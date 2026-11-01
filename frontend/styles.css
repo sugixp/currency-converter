@@ -1,5 +1,5 @@
 /* Currency Exchange Board: the look of an old exchange-house rate board.
-   Graphite panels, amber LED accents and split-flap tiles for the result. */
+   Graphite panels, amber LED accents and a split-flap capsule for the result. */
 
 :root {
   --bg: #121417;
@@ -361,40 +361,29 @@ select:disabled {
   overflow-wrap: anywhere;
 }
 
-.result-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0.4rem 0.75rem;
-  min-height: 4.2rem;
-}
-
-.tiles {
-  /* --chars is set from JS so long numbers shrink instead of overflowing. */
-  --tile-size: min(2.9rem, calc(82cqi / (var(--chars, 8) * 0.86)));
-  display: flex;
-  gap: 0.18em;
-  font: 700 var(--tile-size) / 1 var(--font-mono);
-  perspective: 600px;
-}
-
-.tile {
+.capsule {
+  /* --chars is set from JS so long values shrink to fit instead of overflowing.
+     0.62em is roughly one monospace character, plus room for the padding. */
+  --capsule-size: min(2.6rem, calc(100cqi / (var(--chars, 10) * 0.62 + 1.4)));
   position: relative;
-  display: grid;
-  place-items: center;
-  width: 0.92em;
-  height: 1.3em;
+  display: inline-block;
+  max-width: 100%;
+  margin: 0;
+  padding: 0.3em 0.55em;
+  font: 700 var(--capsule-size) / 1.15 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
   color: var(--amber);
   background: linear-gradient(var(--tile-top) 50%, var(--tile-bottom) 50%);
-  border-radius: 0.14em;
+  border-radius: 0.3em;
   box-shadow: inset 0 0 0 1px var(--tile-edge), 0 0.08em 0 rgba(0, 0, 0, 0.6);
   text-shadow: 0 0 0.35em rgba(255, 178, 46, 0.35);
-  animation: flap 0.5s cubic-bezier(0.2, 0.75, 0.3, 1.15) both;
-  animation-delay: calc(var(--i, 0) * 45ms);
+  animation: capsule-in 0.35s ease-out both;
 }
 
-/* The hinge line across the middle of every flap. */
-.tile::after {
+/* The split-flap hinge line across the middle of the capsule. */
+.capsule::after {
   content: "";
   position: absolute;
   inset: 50% 0 auto;
@@ -402,24 +391,20 @@ select:disabled {
   background: rgba(0, 0, 0, 0.7);
 }
 
-.tile--narrow {
-  width: 0.5em;
+.capsule-code {
+  margin-left: 0.4em;
+  color: var(--ink);
+  text-shadow: none;
 }
 
-.tile--placeholder {
+.capsule--empty {
   color: var(--tile-edge);
   text-shadow: none;
   animation: none;
 }
 
-.result[aria-busy="true"] .tile {
+.result[aria-busy="true"] .capsule {
   animation: pulse 0.9s ease-in-out infinite alternate;
-}
-
-.result-code {
-  font: 800 clamp(1.25rem, 6cqi, 2rem) / 1.2 var(--font-mono);
-  letter-spacing: 0.06em;
-  color: var(--ink);
 }
 
 .result-meta {
@@ -524,17 +509,14 @@ select:disabled {
 
 /* ---- Motion ------------------------------------------------------------------ */
 
-@keyframes flap {
-  0% {
-    transform: rotateX(90deg);
-    opacity: 0.3;
+@keyframes capsule-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.25em) scale(0.97);
   }
-  65% {
-    transform: rotateX(-14deg);
+  to {
     opacity: 1;
-  }
-  100% {
-    transform: rotateX(0);
+    transform: none;
   }
 }
 

@@ -5,7 +5,7 @@ import { createHistoryChart, formatRate, isChartAvailable } from "./history-char
 const POPULAR_CODES = ["USD", "EUR", "BRL", "GBP", "JPY", "CAD", "AUD", "CHF", "CNY", "ARS", "MXN"];
 const DEFAULTS = { from: "USD", to: "BRL", amount: "100" };
 const STORAGE_KEY = "currency-converter:last-conversion";
-const PLACEHOLDER_TILES = "------";
+const PLACEHOLDER = "— — —";
 const HISTORY_DAYS = 30;
 
 const elements = {
@@ -21,8 +21,7 @@ const elements = {
   alertRetry: document.getElementById("alert-retry"),
   result: document.getElementById("result"),
   resultFrom: document.getElementById("result-from"),
-  resultTiles: document.getElementById("result-tiles"),
-  resultCode: document.getElementById("result-code"),
+  resultValue: document.getElementById("result-value"),
   resultText: document.getElementById("result-text"),
   resultRate: document.getElementById("result-rate"),
   resultTime: document.getElementById("result-time"),
@@ -49,7 +48,7 @@ init();
 function init() {
   const saved = loadSavedConversion();
   elements.amount.value = saved.amount;
-  renderTiles(PLACEHOLDER_TILES, { placeholder: true });
+  renderCapsule(PLACEHOLDER);
 
   elements.form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -295,35 +294,41 @@ function renderResult(result) {
   }).format(new Date(result.rate_timestamp));
 
   elements.resultFrom.textContent = `${amount} ${result.from} =`;
-  renderTiles(converted);
-  elements.resultCode.textContent = result.to;
+  renderCapsule(converted, result.to);
   elements.resultRate.textContent = `1 ${result.from} = ${rate} ${result.to}`;
   elements.resultTime.textContent = publishedAt;
-  // The tiles are hidden from screen readers; this sentence is what they announce.
+  // The capsule is hidden from screen readers; this sentence is what they announce.
   elements.resultText.textContent = `${amount} ${result.from} equals ${converted} ${result.to}.`;
 }
 
 function clearResult() {
   elements.resultFrom.innerHTML = "&nbsp;";
-  renderTiles(PLACEHOLDER_TILES, { placeholder: true });
-  elements.resultCode.textContent = "";
+  renderCapsule(PLACEHOLDER);
   elements.resultRate.textContent = "—";
   elements.resultTime.textContent = "—";
   elements.resultText.textContent = "";
 }
 
-function renderTiles(text, { placeholder = false } = {}) {
-  const tiles = [...text].map((character, index) => {
-    const tile = document.createElement("span");
-    tile.className = "tile";
-    if (placeholder) tile.classList.add("tile--placeholder");
-    if (/[^\d\p{L}]/u.test(character)) tile.classList.add("tile--narrow");
-    tile.style.setProperty("--i", index);
-    tile.textContent = character;
-    return tile;
-  });
-  elements.resultTiles.style.setProperty("--chars", Math.max(tiles.length, 6));
-  elements.resultTiles.replaceChildren(...tiles);
+/** Shows the converted value and its currency code together in one capsule. */
+function renderCapsule(value, code = null) {
+  const capsule = elements.resultValue;
+  const valueSpan = document.createElement("span");
+  valueSpan.textContent = value;
+  const parts = [valueSpan];
+  if (code) {
+    const codeSpan = document.createElement("span");
+    codeSpan.className = "capsule-code";
+    codeSpan.textContent = code;
+    parts.push(codeSpan);
+  }
+  capsule.replaceChildren(...parts);
+  capsule.classList.toggle("capsule--empty", !code);
+  // The font size shrinks with the text length so large values never overflow.
+  capsule.style.setProperty("--chars", value.length + (code ? code.length + 1 : 0));
+  // Restart the entrance animation for every new value.
+  capsule.style.animation = "none";
+  void capsule.offsetWidth;
+  capsule.style.animation = "";
 }
 
 function formatNumber(value, options) {

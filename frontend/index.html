@@ -84,10 +84,8 @@
         <h2 id="result-title" class="board-title">Result</h2>
         <div id="result" class="result" aria-live="polite" aria-busy="false">
           <p id="result-from" class="result-from">&nbsp;</p>
-          <div class="result-line">
-            <div id="result-tiles" class="tiles" aria-hidden="true"></div>
-            <span id="result-code" class="result-code"></span>
-          </div>
+          <!-- Visual only: screen readers get the full sentence from #result-text. -->
+          <p id="result-value" class="capsule capsule--empty" aria-hidden="true">— — —</p>
           <p id="result-text" class="visually-hidden"></p>
           <dl class="result-meta">
             <div>
