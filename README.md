@@ -3,7 +3,7 @@
 - **Live app:** https://sugixp.github.io/currency-converter/
 - **API docs (Swagger UI):** https://currency-converter-api-93lo.onrender.com/docs
 
-> Hosted on free plans: if nobody used the API in the last 15 minutes, the first request takes up to a minute while the server wakes up. The page shows a "Waking up the server" notice meanwhile.
+> Hosted on free plans: the API sleeps after about 15 minutes without traffic and takes ~20 s to a minute to wake up. The page never sits empty meanwhile: it shows recently saved rates at once and swaps in the live ones when the API answers.
 
 Real-time currency conversion backed by the [Open Exchange Rates](https://openexchangerates.org/) API, available as a **web app**, a **REST API (FastAPI)** and a **command-line tool**. All of them share the same conversion core.
 
@@ -12,6 +12,7 @@ Real-time currency conversion backed by the [Open Exchange Rates](https://openex
 - Convert between any two of 150+ currencies (USD, BRL, EUR, GBP, JPY...)
 - Cross-rate conversion via USD, so it works on the Open Exchange Rates free plan (fixed USD base)
 - 30-day rate history chart for any currency pair
+- Instant first paint: a snapshot of recent rates published with the site is shown while the API wakes up, then replaced in place by live rates (exact `BigInt` math for the provisional conversion)
 - Caches that save API quota: latest rates with configurable expiration, historical rates forever (one request per day, shared by every pair), persisted in Upstash Redis so restarts cost nothing
 - Quota safety limit: reads the real monthly usage from Open Exchange Rates and pauses only the history before it eats into requests reserved for conversions
 - Exact money math with `Decimal` (no floating-point rounding errors)
@@ -48,11 +49,16 @@ currency_converter/
 tests/              # pytest suite with a fake provider client
 frontend/
 ├── index.html
-├── config.js       # API URL, picked by hostname (localhost or production)
+├── config.js       # API URL (picked by hostname) and timing settings
 ├── api.js          # fetch wrapper: timeout, server wake-up, friendly errors
+├── snapshot.js     # saved rates shown instantly (snapshot.json, built at deploy time)
+├── decimal.js      # exact decimal math with BigInt for the provisional conversion
 ├── app.js          # form, result board, history loading
 ├── history-chart.js  # Chart.js setup
 └── styles.css
+scripts/
+└── build_snapshot.py  # builds snapshot.json from the API's cache in Upstash
+tests/js/           # Node tests for decimal.js and snapshot.js
 render.yaml         # Render Blueprint for the API
 .github/workflows/  # tests.yml (CI) and pages.yml (frontend deploy)
 ```
@@ -244,21 +250,45 @@ python -m pytest
 
 The tests replace the Open Exchange Rates client with a fake one (and the HTTP session with a fake session in the client tests), so they run offline and never use your quota.
 
-The same suite runs on GitHub Actions on every push (`.github/workflows/tests.yml`).
+The frontend's exact decimal math and snapshot logic have their own tests, run with Node.js 22+ (no dependencies):
+
+```powershell
+node --test tests/js/frontend.test.mjs
+```
+
+Both suites run on GitHub Actions on every push (`.github/workflows/tests.yml`).
 
 ## Deployment
 
 | Part | Where | How it deploys |
 |---|---|---|
 | API | [Render](https://render.com) web service, free plan, Oregon | `render.yaml` Blueprint; auto-deploys a commit only after the **Tests** workflow passes (`autoDeployTrigger: checksPass`) |
-| Frontend | [GitHub Pages](https://pages.github.com) | `.github/workflows/pages.yml` publishes the `frontend/` folder when it changes |
+| Frontend | [GitHub Pages](https://pages.github.com) | `.github/workflows/pages.yml` publishes the `frontend/` folder (plus a fresh `snapshot.json`) when it changes and every 2 hours |
 | Shared cache | [Upstash Redis](https://upstash.com), free plan | Used by the API through its REST API |
 
-Secrets (`OXR_APP_ID`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`) are set in the Render dashboard and never committed; `render.yaml` declares them with `sync: false`. `CORS_ORIGINS` is in `render.yaml` and allows only `https://sugixp.github.io` plus the local frontend.
+Secrets are never committed:
+
+- **Render dashboard:** `OXR_APP_ID`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` (declared in `render.yaml` with `sync: false`).
+- **GitHub → Settings → Secrets and variables → Actions:** `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_READONLY_TOKEN` (the **read-only** token, for the snapshot build).
+
+`CORS_ORIGINS` is in `render.yaml` and allows only `https://sugixp.github.io` plus the local frontend.
+
+### Rates snapshot
+
+So the page is never empty while the API sleeps, `pages.yml` runs `scripts/build_snapshot.py` before each deploy. It reads the last known rates and up to 29 days of history **from the API's cache in Upstash** (one `GET` + one `MGET` with the read-only token) and writes `snapshot.json` into the published site; it is never committed.
+
+- **Cost:** 0 Open Exchange Rates requests and 0 Render hours (the API is neither called nor woken); about 2 Upstash commands per run. Currency names come from `currencies.json`, which needs no App ID and does not count toward the quota.
+- **Freshness:** the snapshot is as recent as the last time someone used the live API. The page always shows its date ("Rates from 14:00 UTC · updating…"), and calls it possibly outdated when it is more than 3 days old.
+- **The official numbers come from the API.** The page computes a provisional conversion from the snapshot with exact `BigInt` math (same cents as the API's `Decimal`), then replaces it with the API's answer.
+
+**If the schedule stops:** GitHub disables scheduled workflows in public repositories after 60 days without repository activity. The site keeps working; the page just reports the saved rates as outdated. To turn it back on:
+
+1. Open the repository's **Actions** tab, select **Deploy frontend to GitHub Pages**, and click **Enable workflow** (or run `gh workflow enable pages.yml`).
+2. Click **Run workflow** (or run `gh workflow run pages.yml`) to publish a fresh snapshot right away.
 
 ### Free plan limitations
 
-- **Cold starts:** Render puts free services to sleep after 15 minutes without traffic, and waking up takes about a minute. The frontend polls `/health`, shows a "Waking up the server" notice, and gives up only after 90 seconds.
+- **Cold starts:** Render puts free services to sleep after about 15 minutes without external traffic (Render's own health checks do not count; we measured ~17 min). Waking up took ~20 s in our tests (Render says up to about a minute): Render holds the request open and answers it once the service is up. The frontend shows the snapshot meanwhile, keeps a single `/health` request open for up to 90 seconds, and tells apart a server that is waking up from one that cannot be reached at all (blocked, offline).
 - **Ephemeral disk:** the server's files are wiped on every restart, sleep and deploy. That is why the caches live in Upstash Redis instead of on disk.
 - **Exchange rate quota:** 1,000 Open Exchange Rates requests per month, with rates updated hourly. The caches and the safety limit above keep usage well within it.
 - **Upstash:** 500K commands per month and 250 MB of storage (this app needs a tiny fraction). Free databases are archived after 30 days without any use; restore it from the Upstash console if that happens. Adding a credit card to the Upstash account moves free databases to a paid plan.
