@@ -150,3 +150,67 @@ def test_cors_ignores_other_origins(api):
     response = api.get("/health", headers={"Origin": "https://evil.example"})
 
     assert "access-control-allow-origin" not in response.headers
+
+
+def test_history_defaults_to_30_days(api):
+    response = api.get("/history", params={"from": "usd", "to": "brl"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["from"], body["to"]) == ("USD", "BRL")
+    assert len(body["points"]) == 30
+    assert body["points"][0] == {"date": "2026-10-03", "rate": "5.030000"}
+    assert body["points"][-1] == {"date": "2026-11-01", "rate": "5.070200"}
+
+
+def test_history_with_custom_window(api):
+    response = api.get("/history", params={"from": "EUR", "to": "BRL", "days": "7"})
+
+    assert [point["date"] for point in response.json()["points"]] == [
+        "2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29",
+        "2026-10-30", "2026-10-31", "2026-11-01",
+    ]
+
+
+def test_history_reuses_cached_days_across_requests(api, fake_client):
+    api.get("/history", params={"from": "USD", "to": "BRL"})
+    api.get("/history", params={"from": "EUR", "to": "JPY"})
+
+    assert len(fake_client.historical_calls) == 29
+
+
+@pytest.mark.parametrize(
+    ("params", "status_code", "error"),
+    [
+        ({"from": "USD", "to": "BRL", "days": "365"}, 400, "invalid_days"),
+        ({"from": "USD", "to": "BRL", "days": "1"}, 400, "invalid_days"),
+        ({"from": "USD", "to": "BRL", "days": "abc"}, 400, "invalid_days"),
+        ({"from": "USD"}, 400, "invalid_request"),
+        ({"from": "USD", "to": "B1"}, 400, "invalid_currency"),
+        ({"from": "USD", "to": "ZZZ"}, 404, "unknown_currency"),
+    ],
+)
+def test_history_bad_requests(api, fake_client, params, status_code, error):
+    response = api.get("/history", params=params)
+
+    assert response.status_code == status_code
+    assert response.json()["error"] == error
+    assert fake_client.historical_calls == []
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "status_code", "error"),
+    [
+        (InvalidApiKeyError("bad key"), 502, "provider_auth_error"),
+        (RateLimitExceededError("quota"), 503, "provider_rate_limited"),
+        (ProviderUnavailableError("timeout"), 503, "provider_unavailable"),
+        (ExchangeRateProviderError("not_available"), 502, "provider_error"),
+    ],
+)
+def test_history_provider_failures(api, fake_client, provider_error, status_code, error):
+    fake_client.historical_error = provider_error
+
+    response = api.get("/history", params={"from": "USD", "to": "BRL"})
+
+    assert response.status_code == status_code
+    assert response.json()["error"] == error

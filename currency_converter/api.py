@@ -4,7 +4,7 @@ Run with: uvicorn currency_converter.api:app --reload
 """
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -19,11 +19,12 @@ from currency_converter.errors import (
     InvalidAmountError,
     InvalidApiKeyError,
     InvalidCurrencyError,
+    InvalidDaysError,
     ProviderUnavailableError,
     RateLimitExceededError,
     UnknownCurrencyError,
 )
-from currency_converter.service import ConversionService, create_service
+from currency_converter.service import MAX_HISTORY_DAYS, ConversionService, create_service
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 ERROR_RESPONSES = [
     (InvalidAmountError, 400, "invalid_amount", None),
     (InvalidCurrencyError, 400, "invalid_currency", None),
+    (InvalidDaysError, 400, "invalid_days", None),
     (UnknownCurrencyError, 404, "unknown_currency", None),
     (InvalidApiKeyError, 502, "provider_auth_error",
      "This server's exchange rate provider credentials are missing or invalid."),
@@ -64,6 +66,19 @@ class ConversionResponse(BaseModel):
     converted_amount: str
     rate: str
     rate_timestamp: datetime
+
+
+class HistoryPoint(BaseModel):
+    date: date
+    rate: str
+
+
+class HistoryResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_currency: str = Field(alias="from")
+    to_currency: str = Field(alias="to")
+    points: list[HistoryPoint]
 
 
 class ErrorResponse(BaseModel):
@@ -138,6 +153,25 @@ def create_app(service: ConversionService | None = None, settings: Settings | No
             converted_amount=format(result.converted_amount, "f"),
             rate=format(result.rate, "f"),
             rate_timestamp=result.rate_timestamp,
+        )
+
+    @app.get("/history", response_model=HistoryResponse, responses=error_responses)
+    def history(
+        from_currency: str = Query(alias="from", description="Source currency, e.g. EUR"),
+        to_currency: str = Query(alias="to", description="Target currency, e.g. BRL"),
+        days: str = Query(
+            default=str(MAX_HISTORY_DAYS),
+            description=f"Number of days ending today (2 to {MAX_HISTORY_DAYS})",
+        ),
+    ):
+        result = service.get_history(from_currency, to_currency, days)
+        return HistoryResponse(
+            from_currency=result.from_currency,
+            to_currency=result.to_currency,
+            points=[
+                HistoryPoint(date=point.day, rate=format(point.rate, "f"))
+                for point in result.points
+            ],
         )
 
     return app
