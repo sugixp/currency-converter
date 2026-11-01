@@ -1,4 +1,4 @@
-import { convert, getCurrencies, getHistory } from "./api.js";
+import { convert, getCurrencies, getHistory, onServerStatus } from "./api.js";
 import { createHistoryChart, formatRate, isChartAvailable } from "./history-chart.js";
 
 // Shown first in both selects, in this order (only if the API offers them).
@@ -34,6 +34,7 @@ const elements = {
   historyAlert: document.getElementById("history-alert"),
   historyAlertMessage: document.getElementById("history-alert-message"),
   historyRetry: document.getElementById("history-retry"),
+  serverStatus: document.getElementById("server-status"),
 };
 
 // Only the latest conversion request matters: starting a new one aborts the
@@ -60,6 +61,10 @@ function init() {
   elements.amount.addEventListener("input", () => setAmountError(null));
   elements.alertRetry.addEventListener("click", () => retryAction?.());
   elements.historyRetry.addEventListener("click", loadHistory);
+  // A sleeping server is expected on free hosting: show a notice, not an error.
+  onServerStatus((status) => {
+    elements.serverStatus.hidden = status !== "waking";
+  });
 
   loadCurrencies(saved);
 }
