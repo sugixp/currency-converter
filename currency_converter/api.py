@@ -35,7 +35,7 @@ ERROR_RESPONSES = [
     (InvalidCurrencyError, 400, "invalid_currency", None),
     (UnknownCurrencyError, 404, "unknown_currency", None),
     (InvalidApiKeyError, 502, "provider_auth_error",
-     "The exchange rate provider rejected this server's credentials."),
+     "This server's exchange rate provider credentials are missing or invalid."),
     (RateLimitExceededError, 503, "provider_rate_limited",
      "The exchange rate provider quota was exceeded. Please try again later."),
     (ProviderUnavailableError, 503, "provider_unavailable",
