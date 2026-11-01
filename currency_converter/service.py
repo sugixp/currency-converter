@@ -6,6 +6,7 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from currency_converter.cache import TTLCache
+from currency_converter.config import Settings
 from currency_converter.errors import (
     InvalidAmountError,
     InvalidCurrencyError,
@@ -58,6 +59,12 @@ class ConversionService:
             rate=rate.quantize(RATE_PLACES, rounding=ROUND_HALF_UP),
             rate_timestamp=snapshot.timestamp,
         )
+
+
+def create_service(settings: Settings) -> ConversionService:
+    """Wire the real Open Exchange Rates client and cache from settings."""
+    client = OpenExchangeRatesClient(settings.oxr_app_id, settings.request_timeout_seconds)
+    return ConversionService(client, TTLCache(settings.cache_ttl_seconds))
 
 
 def _parse_currency_code(code) -> str:

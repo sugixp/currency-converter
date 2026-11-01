@@ -1,2 +1,4 @@
 requests~=2.34
 python-dotenv~=1.2
+fastapi~=0.162
+uvicorn~=0.54
