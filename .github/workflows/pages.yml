@@ -5,7 +5,14 @@ on:
     branches: [main]
     paths:
       - "frontend/**"
+      - "scripts/build_snapshot.py"
       - ".github/workflows/pages.yml"
+  # Refresh the rates snapshot every 2 hours (at :17, away from the top of the
+  # hour, when GitHub's scheduler is busiest and delays are longest).
+  # GitHub disables scheduled workflows after 60 days without repository
+  # activity; see "Snapshot" in the README for how to re-enable it.
+  schedule:
+    - cron: "17 */2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -26,6 +33,24 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Reads only what the API already cached in Upstash (read-only token):
+      # no Open Exchange Rates quota, no Render hours. Without the secrets it
+      # skips the snapshot and the site simply waits for the API.
+      - name: Build rates snapshot
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_READONLY_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_READONLY_TOKEN }}
+        run: python scripts/build_snapshot.py --output frontend/snapshot.json
 
       - uses: actions/configure-pages@v6
 
