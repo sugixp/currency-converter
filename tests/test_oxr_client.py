@@ -133,3 +133,33 @@ def test_unexpected_success_body_is_a_provider_error(content):
 
     with pytest.raises(ExchangeRateProviderError):
         client.fetch_latest_rates()
+
+
+USAGE_BODY = (
+    '{"status": 200, "data": {"app_id": "x", "status": "active", "plan": {"name": "Free"},'
+    ' "usage": {"requests": 32, "requests_quota": 1000, "requests_remaining": 968,'
+    ' "days_elapsed": 0, "days_remaining": 30, "daily_average": 32}}}'
+)
+
+
+def test_fetch_usage_reads_remaining_requests():
+    client, session = make_client(make_response(200, USAGE_BODY))
+
+    usage = client.fetch_usage()
+
+    assert (usage.requests_remaining, usage.requests_quota, usage.unlimited) == (968, 1000, False)
+    assert session.requests[0]["url"] == f"{BASE_URL}/usage.json"
+
+
+def test_fetch_usage_unlimited_plan():
+    body = USAGE_BODY.replace('"requests_quota": 1000', '"requests_quota": -1')
+    client, _ = make_client(make_response(200, body))
+
+    assert client.fetch_usage().unlimited
+
+
+def test_fetch_usage_unexpected_body_is_a_provider_error():
+    client, _ = make_client(make_response(200, '{"status": 200, "data": {}}'))
+
+    with pytest.raises(ExchangeRateProviderError):
+        client.fetch_usage()

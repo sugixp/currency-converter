@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 
 from currency_converter.cache import TTLCache
-from currency_converter.oxr_client import RatesSnapshot
+from currency_converter.oxr_client import RatesSnapshot, UsageInfo
 from currency_converter.service import ConversionService
 
 RATES_TIMESTAMP = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
@@ -49,6 +49,8 @@ class FakeOXRClient:
         self.historical_calls = []
         self.error = None
         self.historical_error = None
+        self.usage = UsageInfo(requests_remaining=900, requests_quota=1000)
+        self.usage_calls = 0
         self._lock = threading.Lock()  # history days are fetched from several threads
 
     def fetch_historical_rates(self, day):
@@ -57,6 +59,10 @@ class FakeOXRClient:
         if self.historical_error:
             raise self.historical_error
         return RatesSnapshot(rates=historical_usd_rates(day), timestamp=historical_timestamp(day))
+
+    def fetch_usage(self):
+        self.usage_calls += 1
+        return self.usage
 
     def fetch_latest_rates(self):
         self.rates_calls += 1
@@ -69,6 +75,28 @@ class FakeOXRClient:
         if self.error:
             raise self.error
         return dict(CURRENCIES)
+
+
+class FakeStore:
+    """In-memory KeyValueStore that records every operation."""
+
+    def __init__(self):
+        self.data = {}
+        self.ttls = {}
+        self.operations = []
+
+    def get(self, key):
+        self.operations.append(("get", key))
+        return self.data.get(key)
+
+    def get_many(self, keys):
+        self.operations.append(("get_many", tuple(keys)))
+        return [self.data.get(key) for key in keys]
+
+    def set(self, key, value, ttl_seconds=None):
+        self.operations.append(("set", key))
+        self.data[key] = value
+        self.ttls[key] = ttl_seconds
 
 
 @pytest.fixture

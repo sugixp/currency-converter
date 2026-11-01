@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from currency_converter.api import create_app
+from currency_converter.cache import TTLCache
 from currency_converter.config import Settings
 from currency_converter.errors import (
     ExchangeRateProviderError,
@@ -9,13 +10,21 @@ from currency_converter.errors import (
     ProviderUnavailableError,
     RateLimitExceededError,
 )
+from currency_converter.oxr_client import UsageInfo
+from currency_converter.quota import QuotaGuard
+from currency_converter.service import ConversionService
 
 ALLOWED_ORIGIN = "http://localhost:5173"
 
 
 @pytest.fixture
-def api(service):
+def api(fake_client, clock):
     settings = Settings(oxr_app_id="test", cors_origins=(ALLOWED_ORIGIN,))
+    service = ConversionService(
+        fake_client,
+        TTLCache(ttl_seconds=3600, clock=clock),
+        quota_guard=QuotaGuard(fake_client.fetch_usage, reserve=150, clock=clock),
+    )
     return TestClient(create_app(service=service, settings=settings))
 
 
@@ -214,3 +223,14 @@ def test_history_provider_failures(api, fake_client, provider_error, status_code
 
     assert response.status_code == status_code
     assert response.json()["error"] == error
+
+
+def test_paused_history_returns_503_with_a_clear_message(api, fake_client):
+    fake_client.usage = UsageInfo(requests_remaining=100, requests_quota=1000)
+
+    response = api.get("/history", params={"from": "USD", "to": "BRL"})
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "history_paused"
+    assert "Conversions still work" in response.json()["detail"]
+    assert api.get("/convert", params={"from": "USD", "to": "BRL", "amount": "1"}).status_code == 200

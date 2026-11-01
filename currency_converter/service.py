@@ -16,6 +16,14 @@ from currency_converter.errors import (
 )
 from currency_converter.historical_store import HistoricalRatesStore
 from currency_converter.oxr_client import OpenExchangeRatesClient, RatesSnapshot
+from currency_converter.quota import QuotaGuard
+from currency_converter.storage import (
+    DiskStore,
+    KeyValueStore,
+    UpstashStore,
+    snapshot_from_json,
+    snapshot_to_json,
+)
 
 MAX_AMOUNT = Decimal("1000000000000000")  # 1e15 keeps results well within Decimal precision
 AMOUNT_PLACES = Decimal("0.01")
@@ -28,6 +36,12 @@ _CURRENCY_CODE = re.compile(r"^[A-Z]{3}$")
 MIN_HISTORY_DAYS = 2
 MAX_HISTORY_DAYS = 30
 HISTORY_FETCH_WORKERS = 4
+
+LATEST_RATES_KEY = "latest"
+# With a shared store, each process keeps latest rates in memory only briefly
+# and re-reads the shared copy, so rates are never older than the TTL + this.
+SHARED_MEMORY_TTL_SECONDS = 300
+UPSTASH_KEY_PREFIX = "currency-converter:"
 
 
 @dataclass(frozen=True)
@@ -59,10 +73,16 @@ class ConversionService:
         client: OpenExchangeRatesClient,
         cache: TTLCache,
         history_store: HistoricalRatesStore | None = None,
+        shared_store: KeyValueStore | None = None,
+        latest_ttl_seconds: int = 3600,
+        quota_guard: QuotaGuard | None = None,
     ):
         self._client = client
         self._cache = cache
         self._history_store = history_store or HistoricalRatesStore()
+        self._shared_store = shared_store
+        self._latest_ttl_seconds = latest_ttl_seconds
+        self._quota_guard = quota_guard
 
     def list_currencies(self) -> dict[str, str]:
         return self._cache.get_or_load("currencies", self._client.fetch_currencies)
@@ -96,6 +116,11 @@ class ConversionService:
         today = latest.timestamp.date()
         past_days = [today - timedelta(days=offset) for offset in range(day_count - 1, 0, -1)]
 
+        # Only days found in no cache cost quota; check the safety limit first.
+        missing = self._history_store.missing_days(past_days)
+        if missing and self._quota_guard is not None:
+            self._quota_guard.spend(len(missing))
+
         with ThreadPoolExecutor(max_workers=HISTORY_FETCH_WORKERS) as executor:
             past_snapshots = list(executor.map(self._historical_snapshot, past_days))
 
@@ -108,10 +133,23 @@ class ConversionService:
         return HistoryResult(from_currency=from_code, to_currency=to_code, points=points)
 
     def _latest_snapshot(self, *codes: str) -> RatesSnapshot:
-        snapshot = self._cache.get_or_load("latest_rates", self._client.fetch_latest_rates)
+        snapshot = self._cache.get_or_load("latest_rates", self._load_latest_rates)
         for code in codes:
             if code not in snapshot.rates:
                 raise UnknownCurrencyError(f"Currency '{code}' is not supported.")
+        return snapshot
+
+    def _load_latest_rates(self) -> RatesSnapshot:
+        """Latest rates from the shared store if still fresh there, else from the provider."""
+        if self._shared_store is not None:
+            snapshot = snapshot_from_json(self._shared_store.get(LATEST_RATES_KEY))
+            if snapshot is not None:
+                return snapshot
+        snapshot = self._client.fetch_latest_rates()
+        if self._shared_store is not None:
+            self._shared_store.set(
+                LATEST_RATES_KEY, snapshot_to_json(snapshot), ttl_seconds=self._latest_ttl_seconds
+            )
         return snapshot
 
     def _historical_snapshot(self, day: date) -> RatesSnapshot:
@@ -119,12 +157,35 @@ class ConversionService:
 
 
 def create_service(settings: Settings) -> ConversionService:
-    """Wire the real Open Exchange Rates client and caches from settings."""
+    """Wire the real Open Exchange Rates client, caches and quota guard from settings."""
     client = OpenExchangeRatesClient(settings.oxr_app_id, settings.request_timeout_seconds)
+    guard = QuotaGuard(client.fetch_usage, reserve=settings.quota_reserve)
+
+    if settings.upstash_redis_rest_url:
+        # Production: caches survive restarts and are shared by every instance.
+        def upstash(prefix):
+            return UpstashStore(
+                settings.upstash_redis_rest_url,
+                settings.upstash_redis_rest_token,
+                key_prefix=UPSTASH_KEY_PREFIX + prefix,
+            )
+
+        return ConversionService(
+            client,
+            TTLCache(min(settings.cache_ttl_seconds, SHARED_MEMORY_TTL_SECONDS)),
+            HistoricalRatesStore(upstash("historical:")),
+            shared_store=upstash("rates:"),
+            latest_ttl_seconds=settings.cache_ttl_seconds,
+            quota_guard=guard,
+        )
+
+    # Local development: history on disk (if configured), latest rates in memory.
+    history_disk = DiskStore(settings.history_cache_dir) if settings.history_cache_dir else None
     return ConversionService(
         client,
         TTLCache(settings.cache_ttl_seconds),
-        HistoricalRatesStore(settings.history_cache_dir),
+        HistoricalRatesStore(history_disk),
+        quota_guard=guard,
     )
 
 

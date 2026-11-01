@@ -16,6 +16,7 @@ from currency_converter.config import Settings, load_settings
 from currency_converter.errors import (
     ConverterError,
     ExchangeRateProviderError,
+    HistoryPausedError,
     InvalidAmountError,
     InvalidApiKeyError,
     InvalidCurrencyError,
@@ -36,6 +37,7 @@ ERROR_RESPONSES = [
     (InvalidCurrencyError, 400, "invalid_currency", None),
     (InvalidDaysError, 400, "invalid_days", None),
     (UnknownCurrencyError, 404, "unknown_currency", None),
+    (HistoryPausedError, 503, "history_paused", None),
     (InvalidApiKeyError, 502, "provider_auth_error",
      "This server's exchange rate provider credentials are missing or invalid."),
     (RateLimitExceededError, 503, "provider_rate_limited",

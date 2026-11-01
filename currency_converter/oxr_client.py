@@ -28,6 +28,19 @@ class RatesSnapshot:
     timestamp: datetime
 
 
+@dataclass(frozen=True)
+class UsageInfo:
+    """Account usage for the current month, as reported by usage.json."""
+
+    requests_remaining: int
+    requests_quota: int
+
+    @property
+    def unlimited(self) -> bool:
+        # Open Exchange Rates reports -1 for plans without a request limit.
+        return self.requests_quota < 0
+
+
 class OpenExchangeRatesClient:
     def __init__(self, app_id: str, timeout_seconds: float = 10.0, session=None):
         self._app_id = app_id
@@ -40,6 +53,22 @@ class OpenExchangeRatesClient:
     def fetch_historical_rates(self, day: date) -> RatesSnapshot:
         """Rates published for a past UTC day. Each call counts as one quota request."""
         return self._fetch_snapshot(f"historical/{day.isoformat()}.json")
+
+    def fetch_usage(self) -> UsageInfo:
+        """Current month's usage. Calls to usage.json do not count toward the quota."""
+        if not self._app_id:
+            raise InvalidApiKeyError("OXR_APP_ID is not set. Add it to your .env file.")
+        body = self._get("usage.json", {"app_id": self._app_id})
+        try:
+            usage = body["data"]["usage"]
+            return UsageInfo(
+                requests_remaining=int(usage["requests_remaining"]),
+                requests_quota=int(usage["requests_quota"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ExchangeRateProviderError(
+                "Unexpected response format from Open Exchange Rates."
+            ) from exc
 
     def _fetch_snapshot(self, path: str) -> RatesSnapshot:
         if not self._app_id:

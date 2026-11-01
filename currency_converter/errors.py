@@ -21,6 +21,10 @@ class UnknownCurrencyError(ConverterError):
     """The currency code is well formed but not offered by the provider."""
 
 
+class HistoryPausedError(ConverterError):
+    """Fetching more history would eat into the quota reserved for conversions."""
+
+
 class ExchangeRateProviderError(ConverterError):
     """Open Exchange Rates returned something we could not use."""
 

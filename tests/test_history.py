@@ -8,13 +8,21 @@ import pytest
 
 from currency_converter import config
 from currency_converter.errors import (
+    HistoryPausedError,
     InvalidDaysError,
     ProviderUnavailableError,
     UnknownCurrencyError,
 )
 from currency_converter.historical_store import HistoricalRatesStore
 from currency_converter.oxr_client import RatesSnapshot
-from tests.conftest import RATES_TIMESTAMP, USD_RATES, historical_timestamp, historical_usd_rates
+from currency_converter.storage import DiskStore
+from tests.conftest import (
+    RATES_TIMESTAMP,
+    USD_RATES,
+    FakeStore,
+    historical_timestamp,
+    historical_usd_rates,
+)
 
 TODAY = RATES_TIMESTAMP.date()  # 2026-11-01, the date of the fake latest rates
 
@@ -135,9 +143,9 @@ class CountingLoader:
 def test_store_persists_to_disk_and_survives_restart(tmp_path):
     day = date(2026, 10, 15)
     loader = CountingLoader()
-    HistoricalRatesStore(tmp_path).get_or_load(day, loader)
+    HistoricalRatesStore(DiskStore(tmp_path)).get_or_load(day, loader)
 
-    restarted = HistoricalRatesStore(tmp_path)
+    restarted = HistoricalRatesStore(DiskStore(tmp_path))
     snapshot = restarted.get_or_load(day, loader)
 
     assert loader.calls == [day]
@@ -146,7 +154,7 @@ def test_store_persists_to_disk_and_survives_restart(tmp_path):
 
 def test_store_keeps_rates_as_exact_decimals_on_disk(tmp_path):
     day = date(2026, 10, 15)
-    HistoricalRatesStore(tmp_path).get_or_load(day, CountingLoader())
+    HistoricalRatesStore(DiskStore(tmp_path)).get_or_load(day, CountingLoader())
 
     data = json.loads((tmp_path / "2026-10-15.json").read_text(encoding="utf-8"))
     assert data["rates"]["BRL"] == "5.15"
@@ -169,7 +177,7 @@ def test_store_refetches_when_cache_file_is_corrupt(tmp_path):
     (tmp_path / "2026-10-15.json").write_text("{not json", encoding="utf-8")
     loader = CountingLoader()
 
-    snapshot = HistoricalRatesStore(tmp_path).get_or_load(date(2026, 10, 15), loader)
+    snapshot = HistoricalRatesStore(DiskStore(tmp_path)).get_or_load(date(2026, 10, 15), loader)
 
     assert loader.calls == [date(2026, 10, 15)]
     assert snapshot == make_snapshot(date(2026, 10, 15))
@@ -179,7 +187,7 @@ def test_store_still_works_when_disk_is_not_writable(tmp_path):
     not_a_directory = tmp_path / "file.txt"
     not_a_directory.write_text("x", encoding="utf-8")
     loader = CountingLoader()
-    store = HistoricalRatesStore(not_a_directory)
+    store = HistoricalRatesStore(DiskStore(not_a_directory))
 
     store.get_or_load(date(2026, 10, 15), loader)
     store.get_or_load(date(2026, 10, 15), loader)
@@ -223,3 +231,121 @@ def test_history_cache_dir_setting(monkeypatch, env_value, expected):
         monkeypatch.setenv("HISTORY_CACHE_DIR", env_value)
 
     assert config.load_settings().history_cache_dir == expected
+
+
+# --- Persistent store + quota guard --------------------------------------------
+
+
+def make_service(fake_client, clock, persistent=None, guard=None):
+    from currency_converter.cache import TTLCache
+    from currency_converter.service import ConversionService
+
+    return ConversionService(
+        fake_client,
+        TTLCache(ttl_seconds=3600, clock=clock),
+        HistoricalRatesStore(persistent),
+        quota_guard=guard,
+    )
+
+
+def test_history_survives_a_restart_through_the_persistent_store(fake_client, clock):
+    store = FakeStore()
+    make_service(fake_client, clock, store).get_history("USD", "BRL", 30)
+    fake_client.historical_calls.clear()
+
+    restarted = make_service(fake_client, clock, store)  # fresh memory, same store
+    history = restarted.get_history("EUR", "JPY", 30)
+
+    assert fake_client.historical_calls == []
+    assert len(history.points) == 30
+
+
+def test_persistent_store_is_read_with_one_batch_call(fake_client, clock):
+    store = FakeStore()
+    make_service(fake_client, clock, store).get_history("USD", "BRL", 30)
+    store.operations.clear()
+
+    make_service(fake_client, clock, store).get_history("USD", "BRL", 30)
+
+    assert [operation[0] for operation in store.operations] == ["get_many"]
+    assert len(store.operations[0][1]) == 29
+
+
+def test_guard_is_charged_only_for_days_missing_everywhere(fake_client, clock):
+    store = FakeStore()
+    guard = RecordingGuard()
+    make_service(fake_client, clock, store, guard).get_history("USD", "BRL", 7)
+    make_service(fake_client, clock, store, guard).get_history("USD", "BRL", 30)
+
+    assert guard.spent == [6, 23]
+
+
+def test_paused_history_fetches_nothing(fake_client, clock):
+    guard = RecordingGuard(error=HistoryPausedError("paused"))
+
+    with pytest.raises(HistoryPausedError):
+        make_service(fake_client, clock, guard=guard).get_history("USD", "BRL", 30)
+    assert fake_client.historical_calls == []
+
+
+def test_conversions_never_touch_the_guard(fake_client, clock):
+    guard = RecordingGuard(error=HistoryPausedError("paused"))
+
+    make_service(fake_client, clock, guard=guard).convert("USD", "BRL", "1")
+
+    assert guard.spent == []
+
+
+class RecordingGuard:
+    def __init__(self, error=None):
+        self.spent = []
+        self.error = error
+
+    def spend(self, requests_needed):
+        if self.error:
+            raise self.error
+        self.spent.append(requests_needed)
+
+
+# --- Upstash settings and wiring ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("url", "token"), [("https://x.upstash.io", None), (None, "token")]
+)
+def test_upstash_settings_require_both_values(monkeypatch, url, token):
+    monkeypatch.setattr(config, "load_dotenv", lambda: None)
+    for name, value in (("UPSTASH_REDIS_REST_URL", url), ("UPSTASH_REDIS_REST_TOKEN", token)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match="UPSTASH"):
+        config.load_settings()
+
+
+def test_create_service_uses_upstash_when_configured():
+    from currency_converter.service import create_service
+    from currency_converter.storage import UpstashStore
+
+    service = create_service(
+        config.Settings(
+            oxr_app_id="x",
+            upstash_redis_rest_url="https://x.upstash.io",
+            upstash_redis_rest_token="token",
+        )
+    )
+
+    assert isinstance(service._shared_store, UpstashStore)
+    assert isinstance(service._history_store._persistent, UpstashStore)
+    assert service._quota_guard is not None
+
+
+def test_create_service_uses_disk_without_upstash(tmp_path):
+    from currency_converter.service import create_service
+
+    service = create_service(config.Settings(oxr_app_id="x", history_cache_dir=str(tmp_path)))
+
+    assert service._shared_store is None
+    assert isinstance(service._history_store._persistent, DiskStore)

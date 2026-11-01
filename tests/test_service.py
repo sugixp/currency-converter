@@ -8,7 +8,9 @@ from currency_converter.errors import (
     ProviderUnavailableError,
     UnknownCurrencyError,
 )
-from tests.conftest import CURRENCIES, RATES_TIMESTAMP
+from currency_converter.cache import TTLCache
+from currency_converter.service import ConversionService
+from tests.conftest import CURRENCIES, RATES_TIMESTAMP, FakeStore
 
 
 def test_converts_from_usd(service):
@@ -95,3 +97,47 @@ def test_provider_errors_propagate(service, fake_client):
 
     with pytest.raises(ProviderUnavailableError):
         service.convert("USD", "BRL", "1")
+
+
+# --- Shared store for latest rates -----------------------------------------------
+
+
+def make_shared_service(fake_client, clock, store):
+    return ConversionService(
+        fake_client,
+        TTLCache(ttl_seconds=300, clock=clock),
+        shared_store=store,
+        latest_ttl_seconds=3600,
+    )
+
+
+def test_latest_rates_are_saved_to_the_shared_store_with_the_ttl(fake_client, clock):
+    store = FakeStore()
+
+    make_shared_service(fake_client, clock, store).convert("USD", "BRL", "1")
+
+    assert store.ttls["latest"] == 3600
+    assert fake_client.rates_calls == 1
+
+
+def test_a_restarted_process_reuses_shared_latest_rates(fake_client, clock):
+    store = FakeStore()
+    make_shared_service(fake_client, clock, store).convert("USD", "BRL", "1")
+
+    restarted = make_shared_service(fake_client, clock, store)
+    result = restarted.convert("EUR", "BRL", "100")
+
+    assert fake_client.rates_calls == 1
+    assert result.converted_amount == Decimal("551.11")
+    assert result.rate_timestamp == RATES_TIMESTAMP
+
+
+def test_fetches_again_when_the_shared_copy_expired(fake_client, clock):
+    store = FakeStore()
+    make_shared_service(fake_client, clock, store).convert("USD", "BRL", "1")
+    store.data.clear()  # Redis expired the key
+
+    clock.now = 300  # and the short in-memory copy expired too
+    make_shared_service(fake_client, clock, store).convert("USD", "BRL", "1")
+
+    assert fake_client.rates_calls == 2

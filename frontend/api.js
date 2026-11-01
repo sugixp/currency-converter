@@ -8,6 +8,8 @@ const FRIENDLY_MESSAGES = {
   invalid_currency: "We don't have rates for that currency. Pick another one from the list.",
   unknown_currency: "We don't have rates for that currency. Pick another one from the list.",
   invalid_days: "That history range isn't available.",
+  history_paused:
+    "The history chart is paused to save this month's exchange rate quota. Conversions still work.",
   provider_rate_limited:
     "We've used up our exchange rate quota for now. Please try again later.",
   provider_unavailable:
