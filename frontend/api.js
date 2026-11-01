@@ -10,7 +10,10 @@ import {
 } from "./config.js";
 
 const WAKE_UP_RETRY_MS = 3000;
-const HEALTH_ATTEMPT_TIMEOUT_MS = 30000;
+// A network error this fast cannot be a server booting (Render holds the
+// request open while it boots): it is a blocked request, DNS or no internet.
+const FAST_FAILURE_MS = 2000;
+const FAST_FAILURES_BEFORE_GIVING_UP = 2;
 
 const FRIENDLY_MESSAGES = {
   invalid_request: "Please fill in the amount and both currencies.",
@@ -28,6 +31,9 @@ const FRIENDLY_MESSAGES = {
   provider_error:
     "Our exchange rate provider isn't responding correctly right now. Please try again later.",
   network: "Can't reach the converter. Check your connection or try again shortly.",
+  unreachable:
+    "Can't reach the server. Check your connection, or whether a browser extension or network filter is blocking onrender.com.",
+  offline: "You seem to be offline. Check your internet connection and try again.",
   timeout: "The server is taking too long to respond. Please try again.",
   wake_timeout: "The server is taking too long to wake up. Please try again in a minute.",
 };
@@ -58,10 +64,15 @@ export function getHistory({ from, to, days }, options) {
 }
 
 // ---- Waking up the server ------------------------------------------------------
-// The free hosting plan sleeps after 15 idle minutes. Before the first request
-// (and after a request fails as if the server were gone) we poll /health until
-// it answers, telling the page so it can show a "waking up" notice instead of
-// an error. Concurrent callers share the same wake-up attempt.
+// The free hosting plan sleeps after 15 idle minutes. Measured on Render: a
+// request to a sleeping service is *held open* until it boots (~20 s in our
+// tests, "about a minute" per the docs) and then answered normally. So we send
+// a single /health request and keep it open for the whole wake-up window
+// instead of cancelling and retrying, and we tell apart three cases:
+// - slow answer: the server is booting, show "waking up";
+// - fast network errors: not a boot at all (blocked, DNS, no internet);
+// - browser offline.
+// Concurrent callers share the same wake-up attempt.
 
 let serverAwake = false;
 let wakeUpPromise = null;
@@ -86,32 +97,49 @@ function ensureAwake() {
 
 async function wakeUp() {
   const deadline = Date.now() + WAKE_UP_TIMEOUT_MS;
-  // Only mention waking up if it is actually slow; a healthy server answers at once.
-  const notice = setTimeout(() => emitStatus("waking"), WAKING_NOTICE_DELAY_MS);
-  try {
-    while (Date.now() < deadline) {
-      if (await isHealthy(Math.min(HEALTH_ATTEMPT_TIMEOUT_MS, deadline - Date.now()))) {
-        serverAwake = true;
-        emitStatus("awake");
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, WAKE_UP_RETRY_MS));
+  let fastFailures = 0;
+
+  while (Date.now() < deadline) {
+    if (!navigator.onLine) {
+      emitStatus("unreachable");
+      throw buildError("offline");
     }
-    emitStatus("unreachable");
-    throw buildError("wake_timeout");
-  } finally {
+
+    // Only mention waking up while a request is actually pending for a while.
+    const notice = setTimeout(() => emitStatus("waking"), WAKING_NOTICE_DELAY_MS);
+    const startedAt = Date.now();
+    const outcome = await checkHealth(deadline - Date.now());
     clearTimeout(notice);
+
+    if (outcome === "ok") {
+      serverAwake = true;
+      emitStatus("awake");
+      return;
+    }
+    if (outcome === "timeout") break; // the whole window was used by one request
+
+    const failedFast = outcome === "network" && Date.now() - startedAt < FAST_FAILURE_MS;
+    fastFailures = failedFast ? fastFailures + 1 : 0;
+    if (fastFailures >= FAST_FAILURES_BEFORE_GIVING_UP) {
+      emitStatus("unreachable");
+      throw buildError(navigator.onLine ? "unreachable" : "offline");
+    }
+    // A slow network error or an unexpected answer (e.g. a proxy error page
+    // while booting): wait a moment and ask again within the same window.
+    await new Promise((resolve) => setTimeout(resolve, WAKE_UP_RETRY_MS));
   }
+  emitStatus("unreachable");
+  throw buildError("wake_timeout");
 }
 
-async function isHealthy(timeoutMs) {
+/** "ok" | "timeout" | "network" | "unexpected" */
+async function checkHealth(timeoutMs) {
   try {
-    // While the server boots, the host may hold the request or answer with a
-    // loading page (no CORS headers): both just mean "not yet".
     const body = await fetchJson(new URL("/health", API_BASE_URL), timeoutMs);
-    return body?.status === "ok";
-  } catch {
-    return false;
+    return body?.status === "ok" ? "ok" : "unexpected";
+  } catch (error) {
+    if (error.code === "timeout" || error.code === "network") return error.code;
+    return "unexpected";
   }
 }
 
